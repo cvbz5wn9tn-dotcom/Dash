@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YANSAB Operational Dashboards</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/recharts/umd/Recharts.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'], arabic: ['Tajawal', 'sans-serif'] },
+                    colors: {
+                        brand: { blue: '#1e3a8a', yellow: '#fbbf24', dark: '#111827' },
+                        status: { on: '#10b981', off: '#9ca3af', warning: '#f59e0b', danger: '#ef4444' }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet">
+    
+    <style>
+        @keyframes fade-in { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fade-in 0.4s ease-out forwards; }
+        @keyframes modal-pop { 0% { opacity: 0; transform: scale(0.95); } 100% { opacity: 1; transform: scale(1); } }
+        .animate-modal { animation: modal-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; padding: 0; }
+        .hub-ring { transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1); }
+        .no-jitter { backface-visibility: hidden; transform: translateZ(0); }
+        .chart-container { height: 450px; width: 100%; }
+        
+        .info-tooltip .tooltip-content {
+            visibility: hidden; width: 280px; background-color: #1e293b; color: #fff;
+            text-align: left; border-radius: 8px; padding: 12px; position: absolute;
+            z-index: 50; right: 0; top: 110%; opacity: 0; transition: opacity 0.3s;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); font-size: 11px; line-height: 1.6;
+        }
+        .info-tooltip:hover .tooltip-content { visibility: visible; opacity: 1; }
+
+        .loading-screen { 
+            position: fixed; inset: 0; background: white; 
+            display: flex; flex-direction: column; align-items: center; 
+            justify-content: center; z-index: 100; 
+        }
+        #error-display { display: none; color: #ef4444; padding: 20px; font-family: monospace; }
+        .sync-active-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+        .inline-input { transition: all 0.2s; }
+        .inline-input:focus { box-shadow: 0 2px 0 0 #3b82f6; }
+    </style>
+</head>
+<body class="min-h-screen text-slate-800 antialiased selection:bg-[#1e3a8a] selection:text-white">
+    
+    <div id="loader" class="loading-screen">
+        <div class="animate-spin rounded-full h-12 w-12 border-4 border-blue-900 border-t-transparent mb-4"></div>
+        <p class="font-bold text-slate-600">Initializing Dashboard...</p>
+        <div id="error-display"></div>
+    </div>
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        const MW_TO_KW = 1000;
+        const PEAK_LIMIT_MW = 114.5;
+
+        const SharedIcon = ({ path, className, ...props }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>{path}</svg>
+        );
+
+        const SharedIcons = {
+            Zap: (props) => <SharedIcon path={<><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></>} {...props} />,
+            TrendingUp: (props) => <SharedIcon path={<><polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" /></>} {...props} />,
+            Info: (props) => <SharedIcon path={<><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></>} {...props} />,
+            Activity: (props) => <SharedIcon path={<><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></>} {...props} />,
+            Search: (props) => <SharedIcon path={<><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></>} {...props} />,
+            FolderInput: (props) => <SharedIcon path={<><path d="M2 9h10v5L2 9Z" /><path d="M22 13v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v2" /></>} {...props} />,
+            StopCircle: (props) => <SharedIcon path={<><circle cx="12" cy="12" r="10" /><rect width="6" height="6" x="9" y="9" /></>} {...props} />,
+            ArrowLeft: (props) => <SharedIcon path={<><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></>} {...props} />,
+            ChevronDown: (props) => <SharedIcon path={<><polyline points="6 9 12 15 18 9" /></>} {...props} />,
+            ChevronUp: (props) => <SharedIcon path={<><polyline points="18 15 12 9 6 15" /></>} {...props} />,
+            CheckCircle2: (props) => <SharedIcon path={<><circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" /></>} {...props} />,
+            BarChart3: (props) => <SharedIcon path={<><path d="M3 3v18h18" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></>} {...props} />,
+            Wind: (props) => <SharedIcon path={<><path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2"/><path d="M9.6 4.6A2 2 0 1 1 11 8H2"/><path d="M12.6 19.4A2 2 0 1 0 14 16H2"/></>} {...props} />,
+            BookOpen: (props) => <SharedIcon path={<><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></>} {...props} />,
+            X: (props) => <SharedIcon path={<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>} {...props} />,
+            Globe: (props) => <SharedIcon path={<><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></>} {...props} />
+        };
+
+        const DICT = {
+            en: {
+                lang: 'en',
+                streamsTitle: "STREAMS", guidelinesTitle: "Guidelines",
+                streamElectrical: "ELECTRICAL", streamNitrogen: "NITROGEN", streamAir: "AIR", streamWater: "WATER", streamSteam: "STEAM",
+                titleElec: "Load Factor Dashboard", subtitleElec: "Stream 01 Performance",
+                energyOverview: "Energy Overview", live: "LIVE", sim: "SIMULATOR",
+                monitoringActive: "Monitoring Active", waitingData: "Waiting for Data...",
+                attachExcel: "Attach the Excel file", stopSync: "Stop Sync",
+                instructions: "Instructions:", inst1: "1. Open Excel sheet", inst2: "2. Press Update then save the file", inst3: "3. Attach the excel sheet and keep the file open", inst4: "4. Every time you want to update the data, update the excel and save",
+                avgEnergy: "Average Energy", peakDemand: "Peak Demand", limit: "Limit", target: "Target",
+                loadFactor: "Load Factor", generation: "Generation", total: "TOTAL",
+                equipmentStatus: "Equipment Status", items: "Items", plant: "Plant", tag: "Tag", service: "Service", loadKw: "Load (KW)", status: "Status", noEqData: "No equipment data available", noData: "No data",
+                titleNitro: "Nitrogen Dashboard", subtitleNitro: "Stream 02 Performance",
+                nitroOverview: "Nitrogen Overview", sysDemand: "System Demand", peak: "Peak", designPeak: "Design Peak", dailyAlloc: "Daily Allocation", consGauges: "Consumption Gauges", plantLoads: "Plant Loads", nitroTrends: "Nitrogen Trends (kNm³/d)", loadingCharts: "Loading charts...",
+                guideline1Title: "Electrical Load Factor Protocol", guideline1Obj: "Standard Operating Procedure (SOP) for handling plant requests to energize high-consumer equipment while maintaining grid stability.", guideline1Step1: "Check Current Consumption", guideline1Step1Desc: "If current consumption is < 110 MW, calculate the expected load (Current + Added Load).", guideline1Step1A: "Scenario A: Will NOT hit 114 MW", guideline1Step1ADesc: "Energize the equipment immediately. Monitor to ensure the total load remains ≤ 110 MW.", guideline1Step1B: "Scenario B: WILL hit 114 MW", guideline1Step1BDesc: "Proceed to Urgency Assessment.", guideline1Step2: "Urgency Assessment", guideline1Step2Desc: "Is the energization request strictly urgent for plant operations?", guideline1Step2No: "If NO: Postpone or reject the request until grid load reduces.", guideline1Step2Yes: "If YES: Proceed to Load Shedding evaluation.", guideline1Step3: "Load Shedding & Generation Adjustment", guideline1Step3Desc: "Check if other heavy equipment is ready to be de-energized.", guideline1Step3Yes: "If Yes (Can shed load): De-energize the alternative equipment, then energize the requested equipment.", guideline1Step3No: "If No (Cannot shed load): Increase internal generation manually to offset the demand. Fix current grid consumption to equal exactly 110 MW before energizing.",
+                guideline2Title: "Nitrogen Control Guidelines", guideline2Desc: "Guidelines for Nitrogen are under development.", guideline3Title: "Stream Guidelines", guideline3Desc: "SOP documents will be uploaded soon.", docControl: "YANSAB Document Control"
+            },
+            ar: {
+                lang: 'ar',
+                streamsTitle: "المسارات", guidelinesTitle: "الأدلة الإرشادية",
+                streamElectrical: "الكهرباء", streamNitrogen: "النيتروجين", streamAir: "الهواء", streamWater: "المياه", streamSteam: "البخار",
+                titleElec: "لوحة معامل الحمل", subtitleElec: "أداء المسار 01",
+                energyOverview: "نظرة عامة على الطاقة", live: "مباشر", sim: "محاكي",
+                monitoringActive: "المراقبة نشطة", waitingData: "بانتظار البيانات...",
+                attachExcel: "إرفاق ملف الإكسل", stopSync: "إيقاف المزامنة",
+                instructions: "التعليمات:", inst1: "١. افتح ملف الإكسل", inst2: "٢. اضغط تحديث ثم احفظ الملف", inst3: "٣. أرفق ملف الإكسل وأبقِ الملف مفتوحاً", inst4: "٤. كلما أردت تحديث البيانات، قم بتحديث الإكسل واحفظه",
+                avgEnergy: "متوسط الطاقة", peakDemand: "ذروة الطلب", limit: "الحد الأقصى", target: "الهدف",
+                loadFactor: "معامل الحمل", generation: "التوليد", total: "الإجمالي",
+                equipmentStatus: "حالة المعدات", items: "عناصر", plant: "المصنع", tag: "الرمز", service: "الخدمة", loadKw: "الحمل (ك.و)", status: "الحالة", noEqData: "لا توجد بيانات للمعدات", noData: "لا توجد بيانات",
+                titleNitro: "لوحة النيتروجين", subtitleNitro: "أداء المسار 02",
+                nitroOverview: "نظرة عامة للنيتروجين", sysDemand: "طلب النظام", peak: "الذروة", designPeak: "ذروة التصميم", dailyAlloc: "المخصص اليومي", consGauges: "عدادات الاستهلاك", plantLoads: "أحمال المصانع", nitroTrends: "مؤشرات النيتروجين (kNm³/d)", loadingCharts: "جاري تحميل الرسوم البيانية...",
+                guideline1Title: "بروتوكول معامل الحمل الكهربائي", guideline1Obj: "إجراء التشغيل القياسي للتعامل مع طلبات تشغيل المعدات ذات الاستهلاك العالي مع الحفاظ على استقرار الشبكة.", guideline1Step1: "التحقق من الاستهلاك الحالي", guideline1Step1Desc: "إذا كان الاستهلاك أقل من 110، احسب الحمل المتوقع.", guideline1Step1A: "سيناريو أ: لن يصل إلى 114 ميجاوات", guideline1Step1ADesc: "شغل المعدة فوراً. راقب لضمان بقاء الحمل ≤ 110.", guideline1Step1B: "سيناريو ب: سيصل إلى 114 ميجاوات", guideline1Step1BDesc: "انتقل لتقييم مدى الضرورة.", guideline1Step2: "تقييم مدى الضرورة", guideline1Step2Desc: "هل طلب التشغيل ضروري جداً لعمليات المصنع؟", guideline1Step2No: "إذا لا: أجل الطلب حتى ينخفض حمل الشبكة.", guideline1Step2Yes: "إذا نعم: انتقل لتقييم إطفاء الأحمال.", guideline1Step3: "إطفاء الأحمال وتعديل التوليد", guideline1Step3Desc: "تحقق مما إذا كانت هناك معدات أخرى يمكن إطفاؤها.", guideline1Step3Yes: "إذا نعم (يمكن الإطفاء): أطفئ المعدة البديلة، ثم شغل المعدة المطلوبة.", guideline1Step3No: "إذا لا (لا يمكن الإطفاء): قم بزيادة التوليد الداخلي. ثبّت الاستهلاك عند 110 ميجاوات تماماً قبل التشغيل.",
+                guideline2Title: "إرشادات التحكم بالنيتروجين", guideline2Desc: "الأدلة الإرشادية للنيتروجين قيد التطوير.", guideline3Title: "أدلة المسارات", guideline3Desc: "سيتم رفع الأدلة قريباً.", docControl: "إدارة وثائق ينساب"
+            }
+        };
+
+        const DashboardHeader = ({ title, subtitle, icon: IconCmp, onBack, lang, setLang }) => (
+            <header className="bg-white shadow-lg border-b-4 border-amber-400 sticky top-0 z-40">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center text-left">
+                    <div className="flex items-center space-x-4 gap-2">
+                        {onBack && <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-500"><SharedIcons.ArrowLeft className="h-6 w-6" style={lang === 'ar' ? {transform: 'scaleX(-1)'} : {}} /></button>}
+                        <div className="flex items-center space-x-3 gap-2">
+                            <div className="bg-blue-900 p-2 rounded-lg"><IconCmp className="h-6 w-6 text-white" /></div>
+                            <div dir="ltr" className="text-left flex flex-col">
+                                <h1 className="text-xl md:text-2xl font-bold text-blue-900 tracking-tight leading-tight">YANSAB <span className="text-slate-500 font-light">{title}</span></h1>
+                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.2em]">{subtitle}</p>
+                            </div>
+                        </div>
+                    </div>
+                    <button onClick={() => setLang(lang === 'ar' ? 'en' : 'ar')} className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-full text-xs font-bold transition-colors shadow-sm border border-slate-200">
+                        <SharedIcons.Globe className="w-4 h-4" /> {lang === 'ar' ? 'English' : 'العربية'}
+                    </button>
+                </div>
+            </header>
+        );
+
+        const FileUploader = ({ onFileUpload, t }) => {
+            const [isSyncing, setIsSyncing] = useState(false); const intervalRef = useRef(null); const lastModifiedRef = useRef(0);
+            const startLiveSync = async () => {
+                try {
+                    const [handle] = await window.showOpenFilePicker(); const file = await handle.getFile(); setIsSyncing(true); lastModifiedRef.current = file.lastModified; await onFileUpload(file);
+                    intervalRef.current = setInterval(async () => { const currentFile = await handle.getFile(); if (currentFile.lastModified > lastModifiedRef.current) { lastModifiedRef.current = currentFile.lastModified; await onFileUpload(currentFile); } }, 2000);
+                } catch (e) { console.error("Sync error", e); }
+            };
+            return (
+                <div className="flex items-center gap-3">
+                    <div className="info-tooltip relative flex items-center">
+                        {isSyncing ? <button onClick={() => {clearInterval(intervalRef.current); setIsSyncing(false);}} className="flex items-center px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg text-sm font-bold animate-pulse"><SharedIcons.StopCircle className="w-4 h-4 mr-2" /> {t.stopSync}</button> : <button onClick={startLiveSync} className="flex items-center px-5 py-2.5 bg-blue-900 text-white rounded-xl text-sm font-bold shadow-lg hover:bg-blue-800 transition-all"><SharedIcons.FolderInput className="w-4 h-4 mr-2" /> {t.attachExcel}</button>}
+                        <div className="ml-2 cursor-help text-slate-400 hover:text-blue-900 mx-2"><SharedIcons.Info className="w-5 h-5" /></div>
+                        <div className="tooltip-content shadow-2xl" dir={t.lang === 'ar' ? 'rtl' : 'ltr'}>
+                            <p className="font-bold text-amber-400 mb-2 uppercase tracking-tighter">{t.instructions}</p>
+                            <ul className="space-y-1 text-xs">
+                                <li>{t.inst1}</li><li>{t.inst2}</li><li>{t.inst3}</li><li>{t.inst4}</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const InlineEditable = ({ value, unit, onSave }) => {
+            const [isEditing, setIsEditing] = useState(false);
+            const [tempVal, setTempVal] = useState(value);
+            
+            useEffect(() => { setTempVal(value); }, [value]);
+
+            const commit = () => {
+                setIsEditing(false);
+                let parsed = parseFloat(tempVal);
+                if (!isNaN(parsed)) onSave(parsed);
+                else setTempVal(value); 
+            };
+
+            if (isEditing) {
+                return (
+                    <div className="flex items-center gap-1 animate-fade-in">
+                        <input autoFocus type="number" value={tempVal} onChange={e => setTempVal(e.target.value)} onBlur={commit} onKeyDown={e => e.key === 'Enter' && commit()} className="w-16 text-center text-xs font-black text-blue-900 bg-blue-50/50 outline-none inline-input px-1 py-0.5 rounded" dir="ltr" />
+                        {unit && <span className="text-[10px] font-bold text-slate-500">{unit}</span>}
+                    </div>
+                );
+            }
+            return (
+                <div onClick={() => setIsEditing(true)} className="flex items-center gap-1 cursor-pointer group px-2 py-0.5 rounded hover:bg-blue-50 transition-colors" title="Click to edit">
+                    <span className="text-[11px] font-black text-slate-700 group-hover:text-blue-600 border-b border-dashed border-slate-300 group-hover:border-blue-500 transition-colors" dir="ltr">{value}</span>
+                    {unit && <span className="text-[10px] font-bold text-slate-500">{unit}</span>}
+                </div>
+            );
+        };
+
+        const GuidelinesModal = ({ streamId, onClose, t }) => {
+            if (!streamId) return null;
+
+            let content = null;
+            let title = "";
+            let color = "text-blue-900";
+
+            if (streamId === 1) { 
+                title = t.guideline1Title;
+                color = "text-blue-900";
+                content = (
+                    <div className="space-y-5 text-sm text-slate-700 mt-2">
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                            <p className="text-xs leading-relaxed font-bold">{t.guideline1Obj}</p>
+                        </div>
+                        <div className="pl-2 border-l-2 border-slate-200 space-y-6 ml-2 mr-2">
+                            <div className="relative">
+                                <div className={`absolute ${t.lang==='ar'?'-right-[13px]':'-left-[13px]'} top-1 w-6 h-6 bg-slate-100 rounded-full border-2 border-white flex items-center justify-center shadow-sm`}><div className="w-2 h-2 bg-blue-500 rounded-full"></div></div>
+                                <div className={t.lang==='ar'?'mr-6':'ml-6'}>
+                                    <h4 className="font-bold text-slate-800 mb-1">{t.guideline1Step1}</h4>
+                                    <p className="text-xs mb-3" dir="ltr">{t.guideline1Step1Desc}</p>
+                                    <div className="bg-emerald-50 border border-emerald-100 p-3 rounded-lg mb-3">
+                                        <p className="font-bold text-emerald-800 text-xs mb-1">{t.guideline1Step1A}</p>
+                                        <p className="text-xs text-emerald-700">{t.guideline1Step1ADesc}</p>
+                                    </div>
+                                    <div className="bg-amber-50 border border-amber-100 p-3 rounded-lg">
+                                        <p className="font-bold text-amber-800 text-xs mb-1">{t.guideline1Step1B}</p>
+                                        <p className="text-xs text-amber-700">{t.guideline1Step1BDesc}</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="relative">
+                                <div className={`absolute ${t.lang==='ar'?'-right-[13px]':'-left-[13px]'} top-1 w-6 h-6 bg-slate-100 rounded-full border-2 border-white flex items-center justify-center shadow-sm`}><div className="w-2 h-2 bg-amber-500 rounded-full"></div></div>
+                                <div className={t.lang==='ar'?'mr-6':'ml-6'}>
+                                    <h4 className="font-bold text-slate-800 mb-1">{t.guideline1Step2}</h4>
+                                    <p className="text-xs mb-2">{t.guideline1Step2Desc}</p>
+                                    <ul className={`list-disc ${t.lang==='ar'?'pr-4':'pl-4'} text-xs space-y-1 text-slate-600`}>
+                                        <li>{t.guideline1Step2No}</li><li>{t.guideline1Step2Yes}</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <div className="relative">
+                                <div className={`absolute ${t.lang==='ar'?'-right-[13px]':'-left-[13px]'} top-1 w-6 h-6 bg-slate-100 rounded-full border-2 border-white flex items-center justify-center shadow-sm`}><div className="w-2 h-2 bg-rose-500 rounded-full"></div></div>
+                                <div className={t.lang==='ar'?'mr-6':'ml-6'}>
+                                    <h4 className="font-bold text-slate-800 mb-1">{t.guideline1Step3}</h4>
+                                    <p className="text-xs mb-2">{t.guideline1Step3Desc}</p>
+                                    <div className="space-y-2">
+                                        <div className="flex gap-2 items-start bg-white p-2 border rounded border-slate-200">
+                                            <SharedIcons.CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5"/>
+                                            <p className="text-xs">{t.guideline1Step3Yes}</p>
+                                        </div>
+                                        <div className="flex gap-2 items-start bg-rose-50 p-2 border rounded border-rose-200">
+                                            <SharedIcons.Activity className="w-4 h-4 text-rose-500 shrink-0 mt-0.5"/>
+                                            <p className="text-xs">{t.guideline1Step3No}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            } else if (streamId === 2) { 
+                title = t.guideline2Title;
+                color = "text-yellow-600";
+                content = (
+                    <div className="flex flex-col items-center justify-center h-48 text-slate-400">
+                        <SharedIcons.BookOpen className="w-12 h-12 mb-3 opacity-20" />
+                        <p className="text-sm font-bold">{t.guideline2Desc}</p>
+                    </div>
+                );
+            } else {
+                title = t.guideline3Title;
+                color = "text-slate-600";
+                content = (
+                    <div className="flex flex-col items-center justify-center h-48 text-slate-400">
+                        <SharedIcons.BookOpen className="w-12 h-12 mb-3 opacity-20" />
+                        <p className="text-sm font-bold">{t.guideline3Desc}</p>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center px-4" dir={t.lang === 'ar' ? 'rtl' : 'ltr'}>
+                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={onClose}></div>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden relative z-10 animate-modal flex flex-col max-h-[90vh]">
+                        <div className="flex justify-between items-center p-5 border-b border-slate-100 bg-slate-50/50">
+                            <h2 className={`text-lg font-black tracking-tight ${color}`}>{title}</h2>
+                            <button onClick={onClose} className="p-2 bg-white rounded-full hover:bg-slate-200 transition-colors text-slate-400 hover:text-slate-700 shadow-sm border border-slate-100">
+                                <SharedIcons.X className="w-4 h-4" />
+                            </button>
+                        </div>
+                        <div className="p-6 overflow-y-auto no-scrollbar">
+                            {content}
+                        </div>
+                        <div className="p-4 bg-slate-50 border-t border-slate-100 text-center">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.docControl}</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const parseElectricalExcel = async (file) => {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = e.target?.result;
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        const genSheet = workbook.SheetNames.find(n => n.toLowerCase().includes('generator'));
+                        const eqSheet = workbook.SheetNames.find(n => n.toLowerCase().includes('equipment'));
+                        const paramSheet = workbook.SheetNames.find(n => n.toLowerCase().includes('parameter'));
+                        let generators = []; let equipment = []; let parameters = { averageEnergy: null, basePowerLoad: null };
+                        if (genSheet) {
+                            const raw = XLSX.utils.sheet_to_json(workbook.Sheets[genSheet]);
+                            generators = raw.map(r => ({ id: r.ID, name: r.Name, capacity_mw: Number(r.CapacityMW) || 0, current_mw: Number(r.CurrentMW) || 0 })).filter(g => g.id);
+                        }
+                        if (eqSheet) {
+                            const raw = XLSX.utils.sheet_to_json(workbook.Sheets[eqSheet]);
+                            equipment = raw.map(r => ({ id: r.ID, plant: r.Plant, tag: r.Tag, name: r.Name, load: Number(r.LoadKW) || 0, status: (r.Status?.toUpperCase() === 'ON') ? 'ON' : 'OFF' })).filter(e => e.id);
+                        }
+                        if (paramSheet) {
+                            const raw = XLSX.utils.sheet_to_json(workbook.Sheets[paramSheet]);
+                            raw.forEach(r => {
+                                const k = r.Parameter?.toLowerCase() || '';
+                                if (k.includes('average')) parameters.averageEnergy = Number(r.Value);
+                                if (k.includes('base')) parameters.basePowerLoad = Number(r.Value);
+                            });
+                        }
+                        resolve({ generators, equipment, parameters });
+                    } catch (err) { reject(err); }
+                };
+                reader.readAsArrayBuffer(file);
+            });
+        };
+
+        const ElectricalDashboard = ({ onBack, lang, setLang }) => {
+            const t = DICT[lang];
+            const isRTL = lang === 'ar';
+
+            const [mode, setMode] = useState('live');
+            const [equipmentData, setEquipmentData] = useState([]);
+            const [generatorData, setGeneratorData] = useState([]);
+            const [dashboardParams, setDashboardParams] = useState({ averageEnergy: 0, basePowerLoad: 0 });
+            const [simEquipment, setSimEquipment] = useState([]); 
+            const [simGenerators, setSimGenerators] = useState([]);
+            
+            useEffect(() => { 
+                if (mode === 'simulator') { 
+                    setSimEquipment(JSON.parse(JSON.stringify(equipmentData))); 
+                    setSimGenerators(JSON.parse(JSON.stringify(generatorData))); 
+                } 
+            }, [mode, equipmentData, generatorData]);
+
+            const current = mode === 'live' ? { equipment: equipmentData, generators: generatorData } : { equipment: simEquipment, generators: simGenerators };
+            
+            const metrics = useMemo(() => {
+                if (current.generators.length === 0 && current.equipment.length === 0 && dashboardParams.basePowerLoad === 0) return { totalGenMW: 0, grossLoad: 0, loadFactor: 0 };
+                const totalGenMW = current.generators.reduce((sum, g) => sum + g.current_mw, 0);
+                const equipmentLoad = current.equipment.reduce((sum, i) => sum + (i.status === 'ON' ? i.load : 0), 0);
+                const grossLoad = equipmentLoad + dashboardParams.basePowerLoad;
+                const demand = Math.max(0, grossLoad - (totalGenMW * MW_TO_KW));
+                return { totalGenMW, grossLoad, loadFactor: demand > 0 ? (dashboardParams.averageEnergy / demand) * 100 : 0 };
+            }, [current, dashboardParams]);
+
+            const loadFactorDisplay = Math.min(Math.max(metrics.loadFactor, 0), 100);
+            const gaugeRotation = -90 + (loadFactorDisplay / 100) * 180;
+
+            return (
+                <div className={`min-h-screen bg-slate-50 w-full animate-fade-in pb-12 font-${isRTL ? 'arabic' : 'sans'} text-slate-800`} dir={isRTL ? 'rtl' : 'ltr'}>
+                    <DashboardHeader title={t.titleElec} subtitle={t.subtitleElec} icon={SharedIcons.Zap} onBack={onBack} lang={lang} setLang={setLang} />
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+                        <div className="flex flex-col md:flex-row justify-between items-center gap-6 mb-8 border-b pb-6">
+                            <h2 className="text-2xl font-black text-slate-900 uppercase flex items-center"><SharedIcons.BarChart3 className={`w-6 h-6 ${isRTL ? 'ml-3' : 'mr-3'} text-blue-900`} />{t.energyOverview}</h2>
+                            <div className="bg-slate-200 p-1.5 rounded-xl flex shadow-inner">
+                                <button onClick={() => setMode('live')} className={`px-6 py-2 rounded-lg text-xs font-bold transition-all ${mode === 'live' ? 'bg-white shadow text-blue-900' : 'text-slate-500'}`}>{t.live}</button>
+                                <button onClick={() => setMode('simulator')} className={`px-6 py-2 rounded-lg text-xs font-bold transition-all ${mode === 'simulator' ? 'bg-white shadow text-blue-900' : 'text-slate-500'}`}>{t.sim}</button>
+                            </div>
+                        </div>
+                        <div className="flex flex-col lg:flex-row justify-between items-center gap-6 mb-8">
+                            <span className="bg-blue-100 text-blue-700 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border border-blue-200">{equipmentData.length > 0 ? t.monitoringActive : t.waitingData}</span>
+                            <FileUploader t={t} onFileUpload={async (file) => { const data = await parseElectricalExcel(file); if (data.generators.length) setGeneratorData(data.generators); if (data.equipment.length) setEquipmentData(data.equipment); if (data.parameters.averageEnergy !== null) setDashboardParams(p => ({...p, ...data.parameters})); }} />
+                        </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8 items-stretch">
+                            <div className={`relative overflow-hidden rounded-xl shadow-md border border-slate-100 transition-all bg-blue-900 text-white flex flex-col h-full min-h-[220px]`}>
+                                <div className="p-5 flex flex-col h-full relative z-10">
+                                    <div className="flex justify-between items-center w-full"><h3 className={`text-xs font-bold uppercase tracking-wider text-blue-100`}>{t.avgEnergy}</h3><div className="text-blue-300"><SharedIcons.Activity className="w-5 h-5"/></div></div>
+                                    <div className="flex-1 flex flex-col items-center justify-center py-2"><span className="text-4xl lg:text-5xl font-extrabold tracking-tight" dir="ltr">{dashboardParams.averageEnergy === 0 ? "0" : dashboardParams.averageEnergy.toLocaleString()}</span><span className={`text-sm font-semibold mt-1 uppercase text-blue-200`} dir="ltr">KWH</span></div>
+                                </div>
+                            </div>
+                            <div className="bg-white rounded-xl shadow-md border border-slate-100 p-5 flex flex-col h-full min-h-[220px] relative">
+                                <div className="flex justify-between items-center mb-4"><h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{t.peakDemand}</h3><SharedIcons.TrendingUp className="w-5 h-5 text-slate-300" /></div>
+                                <div className="flex-1 flex flex-col justify-center">
+                                    <div className="flex justify-between items-end mb-2"><span className={`text-4xl font-black ${(metrics.grossLoad/1000) >= 114.5 ? "text-rose-600" : "text-emerald-600"}`} dir="ltr">{(metrics.grossLoad/1000).toFixed(1)} <span className="text-sm">MW</span></span><span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter" dir="ltr">{t.limit}: 114.5 MW</span></div>
+                                    <div className="w-full bg-slate-100 rounded-full h-4 overflow-hidden border border-slate-200"><div className={`h-full transition-all duration-1000 ${(metrics.grossLoad/1000) >= 114.5 ? "bg-rose-500" : "bg-emerald-500"}`} style={{ width: `${Math.min(((metrics.grossLoad/1000) / PEAK_LIMIT_MW) * 100, 100)}%` }} /></div>
+                                </div>
+                                <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1" dir="ltr">
+                                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-rose-500"></div><span className="text-[10px] font-black text-slate-600">≥ 114.5</span></div>
+                                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500"></div><span className="text-[10px] font-black text-slate-600">&lt; 114.5</span></div>
+                                </div>
+                            </div>
+                            <div className="bg-white rounded-xl shadow-md border border-slate-100 p-5 flex flex-col items-center justify-between h-full min-h-[220px] relative">
+                                <div className="w-full flex justify-between items-center mb-2 z-10"><h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{t.loadFactor}</h3><div className={`h-2.5 w-2.5 rounded-full ${metrics.loadFactor > 80 ? 'bg-emerald-500' : metrics.loadFactor > 0 ? 'bg-rose-500' : 'bg-slate-200'}`} /></div>
+                                <div className="flex-1 flex items-center justify-center w-full relative">
+                                    <svg viewBox="0 0 200 105" className="w-full h-auto max-w-[200px] overflow-visible">
+                                        <defs><linearGradient id="gauge-gradient"><stop offset="0%" stopColor="#ef4444" /><stop offset="50%" stopColor="#f59e0b" /><stop offset="100%" stopColor="#10b981" /></linearGradient></defs>
+                                        <path d={`M 30 85 A 70 70 0 0 1 170 85`} fill="none" stroke="#f1f5f9" strokeWidth="16" strokeLinecap="round" />
+                                        <path d={`M 30 85 A 70 70 0 0 1 170 85`} fill="none" stroke={metrics.loadFactor > 0 ? "url(#gauge-gradient)" : "#e2e8f0"} strokeWidth="16" strokeLinecap="round" strokeDasharray={Math.PI * 70} strokeDashoffset={(Math.PI * 70) * (1 - Math.min(Math.max(metrics.loadFactor, 0), 100) / 100)} className="transition-all duration-1000 ease-out" />
+                                        <g transform={`translate(100, 85) rotate(${gaugeRotation})`} className="transition-transform duration-1000"><circle cx="0" cy="0" r="4" fill="#1e293b" /><path d="M -2 0 L 0 -65 L 2 0 Z" fill="#1e293b" /></g>
+                                    </svg>
+                                    <div className="absolute bottom-0 flex justify-center translate-y-4"><span className={`text-3xl font-black ${metrics.loadFactor > 80 ? "text-emerald-500" : "text-rose-500"}`} dir="ltr">{metrics.loadFactor.toFixed(1)}%</span></div>
+                                </div>
+                                <p className="text-[10px] font-bold text-slate-400 mt-6 uppercase" dir="ltr">{t.target} > 80%</p>
+                            </div>
+                            <div className="bg-white rounded-xl shadow-md border border-slate-100 p-5 flex flex-col h-full min-h-[220px]">
+                                <h3 className="text-xs font-bold text-slate-500 uppercase mb-4 flex items-center"><SharedIcons.CheckCircle2 className={`w-4 h-4 ${isRTL?'ml-2':'mr-2'}`}/>{t.generation}</h3>
+                                <div className={`flex-1 overflow-y-auto ${isRTL?'pl-1':'pr-1'} no-scrollbar space-y-1`}>
+                                    {current.generators.length > 0 ? current.generators.map(g => (
+                                        <div key={g.id} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0">
+                                            <span className="text-[10px] font-bold text-slate-600 uppercase" dir="ltr">{g.name}</span>
+                                            {mode === 'live' ? (
+                                                <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded" dir="ltr">{g.current_mw} MW</span>
+                                            ) : (
+                                                <InlineEditable value={g.current_mw} unit="MW" onSave={(val) => setSimGenerators(prev => prev.map(pg => pg.id === g.id ? {...pg, current_mw: val} : pg))} />
+                                            )}
+                                        </div>
+                                    )) : <p className="text-[10px] text-slate-300 italic text-center py-4">{t.noData}</p>}
+                                </div>
+                                <div className="mt-4 pt-2 border-t flex justify-between"><span className="text-[10px] font-bold text-slate-400 uppercase">{t.total}</span><span className="text-sm font-black text-emerald-500" dir="ltr">{metrics.totalGenMW} MW</span></div>
+                            </div>
+                        </div>
+
+                        <div className="bg-white rounded-xl shadow-lg border border-slate-100 overflow-hidden mt-8">
+                            <div className="p-5 bg-slate-50 border-b flex justify-between items-center gap-4">
+                                <h3 className="font-bold text-blue-900 uppercase text-sm tracking-tight">{t.equipmentStatus}</h3>
+                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{current.equipment.length} {t.items}</span>
+                            </div>
+                            <div className="overflow-x-auto animate-fade-in">
+                                <table className="w-full text-left">
+                                    <thead className="bg-blue-900 text-white text-[10px] uppercase"><tr><th className={`px-6 py-4 ${isRTL?'text-right':''}`}>{t.plant}</th><th className={`px-6 py-4 ${isRTL?'text-right':''}`}>{t.tag}</th><th className={`px-6 py-4 ${isRTL?'text-right':''}`}>{t.service}</th><th className={`px-6 py-4 ${isRTL?'text-left':'text-right'}`}>{t.loadKw}</th><th className="px-6 py-4 text-center">{t.status}</th></tr></thead>
+                                    <tbody className="divide-y divide-slate-100">{current.equipment.length > 0 ? current.equipment.map(item => (<tr key={item.id} className="hover:bg-blue-50/30"><td className="px-6 py-4 text-xs text-slate-400" dir="ltr">{item.plant}</td><td className="px-6 py-4 font-mono text-xs font-bold text-blue-900" dir="ltr">{item.tag}</td><td className={`px-6 py-4 text-xs text-slate-600 ${isRTL?'text-right':''}`}>{item.name}</td><td className={`px-6 py-4 text-xs font-black ${isRTL?'text-left':'text-right'}`} dir="ltr">{item.load.toLocaleString()}</td><td className="px-6 py-4 text-center"><button disabled={mode === 'live'} onClick={() => setSimEquipment(prev => prev.map(i => i.id === item.id ? { ...i, status: i.status === 'ON' ? 'OFF' : 'ON' } : i))} className={`px-3 py-1 rounded-full text-[10px] font-black ${item.status === 'ON' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'}`}>{item.status}</button></td></tr>)) : <tr><td colSpan="5" className="px-6 py-12 text-center text-slate-400 italic">{t.noEqData}</td></tr>}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const NitroGauge = ({ value, max, label, unit }) => {
+            const displayValue = Math.min(Math.max(value, 0), max * 1.2);
+            const radius = 70; const centerX = 100; const centerY = 85; const arcLength = Math.PI * radius;
+            const rotation = -90 + (Math.min(displayValue / max, 1) * 180);
+            
+            let statusColor = "text-emerald-500"; 
+            if (value > max) statusColor = "text-rose-500";
+            else if (value > (max * 0.85)) statusColor = "text-amber-500";
+
+            return (
+                <div className="flex-1 flex flex-col items-center justify-center w-full">
+                    <div className="relative w-full max-w-[140px]">
+                        <svg viewBox="0 0 200 105" className="w-full h-auto overflow-visible">
+                            <path d={`M 30 85 A 70 70 0 0 1 170 85`} fill="none" stroke="#f1f5f9" strokeWidth="16" strokeLinecap="round" />
+                            <path d={`M 30 85 A 70 70 0 0 1 170 85`} fill="none" stroke={statusColor === 'text-emerald-500' ? '#10b981' : statusColor === 'text-rose-500' ? '#ef4444' : '#f59e0b'} strokeWidth="16" strokeLinecap="round" strokeDasharray={arcLength} strokeDashoffset={arcLength * (1 - Math.min(displayValue / max, 1))} className="transition-all duration-1000 ease-out" />
+                            <g transform={`translate(${centerX}, ${centerY}) rotate(${rotation})`} className="transition-transform duration-1000"><circle cx="0" cy="0" r="4" fill="#1e293b" /><path d="M -2 0 L 0 -65 L 2 0 Z" fill="#1e293b" /></g>
+                        </svg>
+                        <div className="absolute bottom-0 left-0 right-0 flex flex-col items-center translate-y-4">
+                            <span className={`text-2xl font-black ${statusColor}`} dir="ltr">{value.toLocaleString(undefined, { maximumFractionDigits: 1 })}</span>
+                        </div>
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-6" dir="ltr">{label} ({unit})</span>
+                </div>
+            );
+        };
+
+        const NitrogenDashboard = ({ onBack, lang, setLang }) => {
+            const t = DICT[lang];
+            const isRTL = lang === 'ar';
+
+            const [viewMode, setViewMode] = useState('live');
+            const [consumers, setConsumers] = useState([]);
+            const [simConsumers, setSimConsumers] = useState([]);
+            const [history, setHistory] = useState([]);
+            
+            useEffect(() => {
+                if (viewMode === 'sim') {
+                    setSimConsumers(JSON.parse(JSON.stringify(consumers)));
+                }
+            }, [viewMode, consumers]);
+
+            const processNitroExcel = async (file) => {
+                const buffer = await file.arrayBuffer();
+                const workbook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+                
+                if (workbook.SheetNames.includes('History')) {
+                    const sheet = workbook.Sheets['History'];
+                    const json = XLSX.utils.sheet_to_json(sheet);
+                    const updatedHistory = json.map(row => ({ 
+                        date: row.date || row.Date || '', 
+                        value: Number(row.value) || Number(row['Daily Consumption']) || 0, 
+                        limit: Number(row.limit) || Number(row['Maximum']) || 604.8 
+                    }));
+                    setHistory(updatedHistory);
+                }
+                
+                if (workbook.SheetNames.includes('Consumers')) {
+                    const sheet = workbook.Sheets['Consumers'];
+                    const json = XLSX.utils.sheet_to_json(sheet);
+                    const updatedConsumers = json.map(row => ({ 
+                        id: row.id || row.name, 
+                        name: row.name, 
+                        category: row.category, 
+                        actual: Number(row.actual) || 0, 
+                        designLimit: Number(row.designLimit) || 0 
+                    }));
+                    setConsumers(updatedConsumers);
+                }
+            };
+
+            const currentConsumers = viewMode === 'live' ? consumers : simConsumers;
+            
+            const liveTotalTonH = consumers.reduce((acc, c) => acc + c.actual, 0) / 1000;
+            const simTotalTonH = currentConsumers.reduce((acc, c) => acc + c.actual, 0) / 1000;
+            const activeTotalTonH = viewMode === 'live' ? liveTotalTonH : simTotalTonH;
+            
+            let cumulativeTon = 0;
+            if (viewMode === 'live') {
+                cumulativeTon = history.length > 0 ? history[history.length - 1].value : (liveTotalTonH * 24);
+            } else {
+                const baseCumulative = history.length > 0 ? history[history.length - 1].value : (liveTotalTonH * 24);
+                const deltaTonH = simTotalTonH - liveTotalTonH;
+                cumulativeTon = baseCumulative + (deltaTonH * 24); 
+            }
+            const cumulativeKNm3 = cumulativeTon / 1.23178;
+
+            const { ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = window.Recharts || {};
+
+            return (
+                <div className={`min-h-screen bg-slate-50 w-full animate-fade-in pb-12 font-${isRTL ? 'arabic' : 'sans'} text-slate-800`} dir={isRTL ? 'rtl' : 'ltr'}>
+                    <DashboardHeader title={t.titleNitro} subtitle={t.subtitleNitro} icon={SharedIcons.Wind} onBack={onBack} lang={lang} setLang={setLang} />
+                    
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+                        <div className="flex flex-col md:flex-row justify-between items-center gap-6 mb-8 border-b pb-6">
+                            <h2 className="text-2xl font-black text-slate-900 uppercase flex items-center"><SharedIcons.BarChart3 className={`w-6 h-6 ${isRTL?'ml-3':'mr-3'} text-blue-900`} />{t.nitroOverview}</h2>
+                            <div className="bg-slate-200 p-1.5 rounded-xl flex shadow-inner">
+                                <button onClick={() => setViewMode('live')} className={`px-6 py-2 rounded-lg text-xs font-bold transition-all ${viewMode === 'live' ? 'bg-white shadow text-blue-900' : 'text-slate-500'}`}>{t.live}</button>
+                                <button onClick={() => setViewMode('sim')} className={`px-6 py-2 rounded-lg text-xs font-bold transition-all ${viewMode === 'sim' ? 'bg-white shadow text-blue-900' : 'text-slate-500'}`}>{t.sim}</button>
+                            </div>
+                        </div>
+                        
+                        <div className="flex flex-col lg:flex-row justify-between items-center gap-6 mb-8">
+                            <span className="bg-blue-100 text-blue-700 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border border-blue-200">
+                                {consumers.length > 0 ? t.monitoringActive : t.waitingData}
+                            </span>
+                            <FileUploader t={t} onFileUpload={processNitroExcel} />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8 items-stretch">
+                            <div className="bg-blue-900 rounded-xl shadow-md border border-blue-800 p-5 flex flex-col hover:shadow-xl transition-all h-full min-h-[200px] relative overflow-hidden text-white">
+                                <div className="flex justify-between items-center mb-4 relative z-10">
+                                    <h3 className="text-xs font-bold text-blue-100 uppercase tracking-wider">{t.sysDemand}</h3>
+                                    <SharedIcons.Activity className="w-5 h-5 text-blue-300" />
+                                </div>
+                                <div className="flex-1 flex flex-col justify-center relative z-10">
+                                    <div className="flex justify-between items-end mb-2">
+                                        <span className="text-4xl font-black text-white" dir="ltr">{activeTotalTonH.toFixed(1)} <span className="text-sm font-semibold text-blue-200">T/h</span></span>
+                                        <span className="text-[10px] font-bold text-blue-300 uppercase tracking-tighter" dir="ltr">{t.peak}: 31.0 T/h</span>
+                                    </div>
+                                    <div className="w-full bg-blue-950 rounded-full h-4 overflow-hidden border border-blue-800">
+                                        <div className="bg-cyan-400 h-full transition-all duration-1000 shadow-[0_0_10px_rgba(34,211,238,0.5)]" style={{ width: `${Math.min((activeTotalTonH / 31.0) * 100, 100)}%` }} />
+                                    </div>
+                                </div>
+                                <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-blue-600 rounded-full blur-3xl opacity-20 pointer-events-none"></div>
+                            </div>
+
+                            <div className="bg-white rounded-xl shadow-md border border-slate-100 p-5 flex flex-col justify-center gap-4 h-full min-h-[200px]">
+                                <div className="flex justify-between items-center">
+                                    <div>
+                                        <div className="text-3xl font-black text-slate-800" dir="ltr">31.0 <span className="text-sm font-light text-slate-500">T/h</span></div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.designPeak}</p>
+                                    </div>
+                                </div>
+                                <div className="h-px bg-slate-100"></div>
+                                <div className="flex justify-between items-center">
+                                    <div>
+                                        <div className="text-3xl font-black text-slate-800" dir="ltr">744 <span className="text-sm font-light text-slate-500">Ton/Day</span></div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.dailyAlloc}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-white rounded-xl shadow-md border border-slate-100 p-5 flex flex-col h-full min-h-[200px]">
+                                <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 tracking-wider w-full text-center">{t.consGauges}</h3>
+                                <div className="flex-1 flex w-full pt-2">
+                                    <NitroGauge value={cumulativeTon} max={744} label={t.total} unit="Ton/Day" />
+                                    <NitroGauge value={cumulativeKNm3} max={604.8} label={t.total} unit="kNm³/Day" />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                            <div className="lg:col-span-1 bg-white rounded-xl shadow-md border border-slate-100 overflow-hidden h-fit">
+                                <div className="p-5 border-b bg-slate-50"><h2 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{t.plantLoads}</h2></div>
+                                <div className="divide-y divide-slate-50">
+                                    {currentConsumers.length > 0 ? currentConsumers.map(c => {
+                                        const actualTonH = c.actual / 1000;
+                                        const isOver = c.actual > c.designLimit;
+                                        const perc = c.designLimit > 0 ? Math.min((c.actual / c.designLimit) * 100, 100) : 0;
+                                        return (
+                                            <div key={c.id} className={`px-4 py-4 border-l-4 ${isOver ? "bg-red-50 border-red-500" : "border-slate-100"}`}>
+                                                <div className="flex justify-between items-center mb-2">
+                                                    <span className="text-xs font-bold text-slate-700 uppercase" dir="ltr">{c.name}</span>
+                                                    {viewMode === 'live' ? (
+                                                        <span className="text-xs font-black text-blue-900 bg-blue-50 px-2 py-0.5 rounded" dir="ltr">{actualTonH.toFixed(1)} T/h</span>
+                                                    ) : (
+                                                        <InlineEditable value={actualTonH.toFixed(1)} unit="T/h" onSave={(val) => setSimConsumers(prev => prev.map(con => con.id === c.id ? { ...con, actual: val * 1000 } : con))} />
+                                                    )}
+                                                </div>
+                                                <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                                                    <div className={`h-full transition-all duration-500 ${isOver ? "bg-red-500" : (c.category === 'Polymer' ? "bg-emerald-500" : "bg-sky-500")}`} style={{ width: perc + '%' }}></div>
+                                                </div>
+                                            </div>
+                                        )
+                                    }) : <div className="p-6 text-center text-xs text-slate-400 italic">{t.noData}</div>}
+                                </div>
+                            </div>
+                            
+                            <div className="lg:col-span-3 bg-white p-6 rounded-xl shadow-md border border-slate-100 min-h-[450px] flex flex-col">
+                                <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-6" dir="ltr">{t.nitroTrends}</h3>
+                                <div className="flex-1 w-full" dir="ltr">
+                                    {ResponsiveContainer ? (
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <ComposedChart data={history.length > 0 ? history : []}>
+                                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                                <XAxis dataKey="date" tick={{fontSize: 10, fill: '#94a3b8'}} hide={history.length === 0} />
+                                                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                                                <Tooltip contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
+                                                <Area type="monotone" dataKey="value" stroke="#1e3a8a" fill="#1e3a8a10" strokeWidth={3} name="Consumption" />
+                                                <Line type="monotone" dataKey="limit" stroke="#f59e0b" strokeWidth={2} strokeDasharray="5 5" dot={false} name="Limit" />
+                                                <Legend wrapperStyle={{paddingTop: '20px', fontSize: '10px', fontWeight: 'bold'}} />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    ) : (
+                                        <div className="h-full flex items-center justify-center text-slate-400">{t.loadingCharts}</div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const STREAMS_DATA = [
+            { id: 1, label: "ELECTRICAL", color: "#3B82F6", target: 'ELECTRICAL_DASHBOARD' },
+            { id: 2, label: "NITROGEN", color: "#FACC15", target: 'NITROGEN_DASHBOARD' },
+            { id: 3, label: "AIR", color: "#94A3B8" },
+            { id: 4, label: "WATER", color: "#94A3B8" },
+            { id: 5, label: "STEAM", color: "#94A3B8" }
+        ];
+
+        const OverviewPentagon = ({ stream, onClick, onInfoClick, size = 180, t }) => {
+            const points = "50,5 95,38 78,92 22,92 5,38";
+            let displayLabel = stream.label;
+            if(stream.id === 1) displayLabel = t.streamElectrical;
+            if(stream.id === 2) displayLabel = t.streamNitrogen;
+            if(stream.id === 3) displayLabel = t.streamAir;
+            if(stream.id === 4) displayLabel = t.streamWater;
+            if(stream.id === 5) displayLabel = t.streamSteam;
+
+            return (
+                <div className="flex flex-col items-center">
+                    <div onClick={() => onClick(stream)} className={`relative flex items-center justify-center transition-transform duration-700 hover:scale-110 group no-jitter ${stream.target ? 'cursor-pointer' : 'opacity-80'}`} style={{ width: size, height: size }}>
+                        <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full drop-shadow-sm"><polygon points={points} fill="white" stroke={stream.color} strokeWidth="1.2" className="transition-all group-hover:stroke-width-[2.5px]" /></svg>
+                        <div className="relative z-10 flex flex-col items-center"><span className="text-[11px] font-bold tracking-widest leading-tight" style={{ color: stream.color }}>{displayLabel}</span><div className="w-1.5 h-1.5 rounded-full mt-4 opacity-20 group-hover:opacity-100 transition-all" style={{ backgroundColor: stream.color }} /></div>
+                    </div>
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onInfoClick(stream.id); }} 
+                        className="mt-4 p-1.5 rounded-full text-slate-300 hover:text-blue-500 hover:bg-blue-50 transition-all opacity-80 hover:opacity-100"
+                        title={`${displayLabel} Guidelines`}
+                    >
+                        <SharedIcons.BookOpen className="w-4 h-4" />
+                    </button>
+                </div>
+            );
+        };
+
+        const Overview = ({ onNavigate, lang, setLang }) => {
+            const t = DICT[lang];
+            const isRTL = lang === 'ar';
+            const angles = [0, 72, 144, 216, 288]; const radius = 260;
+            const [activeGuide, setActiveGuide] = useState(null);
+
+            return (
+                <div className={`min-h-screen bg-white flex flex-col font-${isRTL ? 'arabic' : 'sans'} text-slate-800 animate-fade-in overflow-hidden`} dir={isRTL ? 'rtl' : 'ltr'}>
+                    <div className="w-full flex justify-end p-6 absolute top-0 right-0 z-50">
+                        <button onClick={() => setLang(lang === 'ar' ? 'en' : 'ar')} className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-full text-xs font-bold transition-colors shadow-sm border border-slate-200">
+                            <SharedIcons.Globe className="w-4 h-4" /> {lang === 'ar' ? 'English' : 'العربية'}
+                        </button>
+                    </div>
+
+                    <div className="flex-1 flex items-center justify-center p-8">
+                        <div className="relative w-full max-w-4xl aspect-square flex items-center justify-center">
+                            <div className="absolute w-[400px] h-[400px] border border-slate-50 rounded-full hub-ring flex items-center justify-center"><div className="w-[280px] h-[280px] border border-slate-100 rounded-full flex items-center justify-center bg-white shadow-inner"><h2 className="text-2xl font-light tracking-[0.8em] text-slate-300 uppercase select-none mr-[-0.8em]" dir="ltr">STREAMS</h2></div></div>
+                            {angles.map((angle, i) => { 
+                                const s = STREAMS_DATA[i]; 
+                                if (!s) return null; 
+                                const x = Math.sin((angle * Math.PI) / 180) * radius; 
+                                const y = -Math.cos((angle * Math.PI) / 180) * radius; 
+                                return (
+                                    <div key={s.id} className="absolute flex items-center justify-center z-10" style={{ transform: `translate(${x}px, ${y}px)` }}>
+                                        <OverviewPentagon stream={s} onClick={(st) => st.target && onNavigate(st.target)} onInfoClick={setActiveGuide} t={t} />
+                                    </div>
+                                ); 
+                            })}
+                        </div>
+                    </div>
+                    <GuidelinesModal streamId={activeGuide} onClose={() => setActiveGuide(null)} t={t} />
+                </div>
+            );
+        };
+
+        const MainApp = () => {
+            const [view, setView] = useState('OVERVIEW');
+            const [lang, setLang] = useState('ar');
+            
+            useEffect(() => {
+                const loader = document.getElementById('loader');
+                if (loader) loader.style.display = 'none';
+            }, []);
+
+            return (
+                <div className="w-full min-h-screen">
+                    {view === 'OVERVIEW' && <Overview onNavigate={setView} lang={lang} setLang={setLang} />}
+                    {view === 'ELECTRICAL_DASHBOARD' && <ElectricalDashboard onBack={() => setView('OVERVIEW')} lang={lang} setLang={setLang} />}
+                    {view === 'NITROGEN_DASHBOARD' && <NitrogenDashboard onBack={() => setView('OVERVIEW')} lang={lang} setLang={setLang} />}
+                </div>
+            );
+        };
+
+        try {
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(<MainApp />);
+        } catch (err) {
+            const errDiv = document.getElementById('error-display');
+            if (errDiv) {
+                errDiv.style.display = 'block';
+                errDiv.innerHTML = 'Execution Error: ' + err.message;
+            }
+            console.error(err);
+        }
+    </script>
+</body>
+</html>
